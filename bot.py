@@ -2,12 +2,12 @@ import math
 import numpy as np
 import librosa
 import matplotlib.pyplot as plt
-from telegram import Update
+from telegram import Update, constants
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import io
 import os
 import logging
-# Ensure this script runs as a web server to satisfy Render deployment requirements.
+# This file is structured to run via polling or the internal run_webhook of python-telegram-bot.
 
 # Setup basic logging
 logging.basicConfig(
@@ -70,7 +70,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• How sharp/flat you are 📈\n"
         "• Fundamental frequency (Hz)\n\n"
         "Try it now!",
-        parse_mode="Markdown"
+        # Use constants.ParseMode.MARKDOWN for consistency
+        parse_mode=constants.ParseMode.MARKDOWN 
     )
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,14 +79,18 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your audio... one moment! 🎼")
     
     file = None
+    file_type = "unknown audio"
+    
     if update.message.voice:
         file = await update.message.voice.get_file()
+        file_type = "voice note (OGG/Opus)"
     elif update.message.audio:
         file = await update.message.audio.get_file()
+        file_type = f"audio file ({update.message.audio.mime_type or 'unknown MIME'})"
     else:
         # This branch is technically unreachable due to the MessageHandler filter, 
         # but kept for robustness.
-        await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧", parse_mode="Markdown")
+        await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧", parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     try:
@@ -98,8 +103,17 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             y, sr = librosa.load(buf, sr=None, mono=True)
 
     except Exception as e:
-        logger.error(f"Error loading audio: {e}")
-        await update.message.reply_text("❌ Sorry, I had trouble reading that audio file. Is it a standard format?")
+        # Detailed error logging for debugging the exact file format failure
+        logger.error(f"Error loading {file_type} from user {update.effective_user.id}: {e}")
+        
+        # User-facing message is the key fix applied here
+        error_msg = f"❌ Sorry, I had trouble reading that audio file ({file_type}). "
+        if "voice note" in file_type:
+             error_msg += "If this is a voice note, try sending an explicit MP3 or WAV file instead."
+        else:
+             error_msg += "Please ensure it's a standard MP3 or WAV file and try again."
+             
+        await update.message.reply_text(error_msg)
         return
 
     # Detect pitch
@@ -124,7 +138,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f" *Target Note Frequency:* {target_freq:.2f} Hz\n"
         f" *Tuning Status:* {tuning_text}"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
 
     # Generate and send waveform plot
     try:
@@ -152,50 +166,40 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not generate the waveform visualization.")
 
 
-# ------------------- Run the Bot (Webhook Setup) -------------------
+# ------------------- Run the Bot -------------------
 
 def main():
-    """Start the bot using Webhooks for Render deployment."""
-    # --- Environment Variables ---
+    """Start the bot using Polling or internal Webhooks."""
     TOKEN = os.getenv("BOT_TOKEN")
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL") # e.g., https://tune-trainer-bot.onrender.com
-    PORT = int(os.environ.get("PORT", "5000")) # Render sets this
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL") 
+    PORT = int(os.environ.get("PORT", "5000"))
     
     if not TOKEN:
         logger.error("❌ BOT_TOKEN environment variable not set.")
         return
-    if not WEBHOOK_URL:
-        logger.warning("⚠️ WEBHOOK_URL environment variable not set. Falling back to Polling.")
-        # If WEBHOOK_URL is missing, we revert to polling as a fallback.
-        app = ApplicationBuilder().token(TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
-        logger.info("🤖 TuneTrainerBot starting in Polling mode...")
-        app.run_polling()
-        return
 
-    # --- Webhook Setup ---
-    logger.info(f"Using Webhook URL: {WEBHOOK_URL} on port: {PORT}")
-    
-    # 1. Build the application instance
     app = ApplicationBuilder().token(TOKEN).build()
-    
-    # 2. Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
-    
-    # 3. Start the webhook server
-    try:
-        app.run_webhook(
-            listen="0.0.0.0",               # Listen on all interfaces (required by Render)
-            port=PORT,                       # Use the port specified by the environment
-            url_path=TOKEN,                  # Use the token as a secret path (improves security)
-            webhook_url=f"{WEBHOOK_URL}/{TOKEN}" # Telegram needs the full URL
-        )
-        logger.info(" TuneTrainerBot started successfully with Webhook!")
-    except Exception as e:
-        logger.error(f"Failed to start webhook: {e}")
 
+    if WEBHOOK_URL:
+        # --- Webhook Setup (internal) ---
+        logger.info(f"Using Webhook URL: {WEBHOOK_URL} on port: {PORT}")
+        try:
+            app.run_webhook(
+                listen="0.0.0.0",
+                port=PORT,
+                url_path=TOKEN,
+                webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+            )
+            logger.info("🚀 TuneTrainerBot started successfully with internal Webhook!")
+        except Exception as e:
+            logger.error(f"Failed to start internal webhook: {e}")
+            
+    else:
+        # --- Polling Setup (fallback) ---
+        logger.info("🤖 TuneTrainerBot starting in Polling mode...")
+        app.run_polling()
 
 if __name__ == "__main__":
     main()
