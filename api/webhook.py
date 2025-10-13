@@ -51,6 +51,7 @@ def hz_to_note(freq: float):
     target_freq = 440.0 * (2 ** ((nearest_midi - 69) / 12))
     return note_name, cents_off, target_freq
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎺 Welcome to *TuneTrainerBot!* 🎶\n\n"
@@ -62,14 +63,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=constants.ParseMode.MARKDOWN
     )
 
+
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your audio... one moment! 🎼")
-    
+
     file = None
+    file_type = "unknown audio"
+
     if update.message.voice:
         file = await update.message.voice.get_file()
+        file_type = "voice note (OGG/Opus)"
     elif update.message.audio:
         file = await update.message.audio.get_file()
+        file_type = f"audio file ({update.message.audio.mime_type or 'unknown MIME'})"
     else:
         await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧", parse_mode=constants.ParseMode.MARKDOWN)
         return
@@ -80,8 +86,13 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buf.seek(0)
             y, sr = librosa.load(buf, sr=None, mono=True)
     except Exception as e:
-        logger.error(f"Error loading audio: {e}")
-        await update.message.reply_text("❌ Sorry, I had trouble reading that audio file. Is it a standard format?")
+        logger.error(f"Error loading {file_type} from user {update.effective_user.id}: {e}")
+        error_msg = f"❌ Sorry, I had trouble reading that audio file ({file_type}). "
+        if "voice note" in file_type:
+            error_msg += "If this is a voice note, try sending an explicit MP3 or WAV file instead."
+        else:
+            error_msg += "Please ensure it's a standard MP3 or WAV file and try again."
+        await update.message.reply_text(error_msg)
         return
 
     freq = detect_pitch(y, sr)
@@ -91,7 +102,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     note_name, cents_off, target_freq = hz_to_note(freq)
     cents_abs = abs(cents_off)
-    
+
     tuning_indicator = "✨" if cents_abs < 5 else ("📈" if cents_off > 0 else "📉")
     tuning_text = "Perfectly in tune!" if cents_abs < 5 else (
         f"{tuning_indicator} {cents_abs:.1f} cents {'sharp' if cents_off > 0 else 'flat'}"
@@ -110,18 +121,18 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fig, ax = plt.subplots(figsize=(8, 3))
         duration_to_plot = min(len(y) / sr, 5)
         samples_to_plot = int(duration_to_plot * sr)
-        
-        ax.plot(y[:samples_to_plot], color='skyblue')
-        ax.set_title(f"Waveform (First {duration_to_plot:.1f}s) – {note_name}", fontsize=14, color='darkslategray')
+
+        ax.plot(y[:samples_to_plot])
+        ax.set_title(f"Waveform (First {duration_to_plot:.1f}s) – {note_name}", fontsize=14)
         ax.set_xlabel("Time (Samples)")
         ax.set_ylabel("Amplitude")
-        ax.grid(True, alpha=0.5, linestyle='--')
-        
+        ax.grid(True, alpha=0.3)
+
         img_buf = io.BytesIO()
         plt.savefig(img_buf, format="png", bbox_inches='tight')
         plt.close(fig)
         img_buf.seek(0)
-        
+
         await update.message.reply_photo(img_buf, caption="📈 Audio Waveform Visualization")
     except Exception as e:
         logger.error(f"Error generating or sending photo: {e}")
@@ -151,7 +162,7 @@ async def telegram_webhook(req: Request):
         logger.error(f"Telegram error while processing update: {e}")
     except Exception as e:
         logger.exception("Exception while processing update: %s", e)
-    
+
     return {"status": "ok"}
 
 
@@ -176,8 +187,8 @@ async def on_startup():
     else:
         logger.warning("WEBHOOK_URL not set. Webhook was not registered with Telegram.")
 
+
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8000))
     logger.info("Starting uvicorn server on port %s", PORT)
-    
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
