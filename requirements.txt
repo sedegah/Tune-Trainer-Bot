@@ -4,3 +4,4 @@ numpy
 matplotlib
 soundfile
 ffmpeg-python
+pydub
