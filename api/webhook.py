@@ -1,23 +1,33 @@
+import os
+import io
 import math
+import logging
 import numpy as np
 import librosa
 import matplotlib.pyplot as plt
-from telegram import Update, constants
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, AIORateLimiter
-import io
-import os
-import logging
 
 from fastapi import FastAPI, Request, HTTPException
 import uvicorn
+
+from telegram import Update, constants
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    AIORateLimiter,
+)
 from telegram.error import TelegramError
 
+# ------------------ Logging ------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
+# ------------------ Environment ------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
@@ -26,9 +36,9 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
 if not WEBHOOK_URL:
-    logger.warning("⚠️ WEBHOOK_URL environment variable not set. Startup may fail.")
+    logger.warning("⚠️ WEBHOOK_URL environment variable not set. Falling back to polling mode if webhook fails.")
 
-
+# ------------------ Pitch Detection ------------------
 def detect_pitch(audio: np.ndarray, sr: int):
     if audio is None:
         return None
@@ -51,7 +61,7 @@ def hz_to_note(freq: float):
     target_freq = 440.0 * (2 ** ((nearest_midi - 69) / 12))
     return note_name, cents_off, target_freq
 
-
+# ------------------ Telegram Bot Handlers ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎺 Welcome to *TuneTrainerBot!* 🎶\n\n"
@@ -77,7 +87,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.audio.get_file()
         file_type = f"audio file ({update.message.audio.mime_type or 'unknown MIME'})"
     else:
-        await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧", parse_mode=constants.ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            "Please send a *voice note* or *audio file!* 🎧",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
         return
 
     try:
@@ -87,12 +100,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             y, sr = librosa.load(buf, sr=None, mono=True)
     except Exception as e:
         logger.error(f"Error loading {file_type} from user {update.effective_user.id}: {e}")
-        error_msg = f"❌ Sorry, I had trouble reading that audio file ({file_type}). "
-        if "voice note" in file_type:
-            error_msg += "If this is a voice note, try sending an explicit MP3 or WAV file instead."
-        else:
-            error_msg += "Please ensure it's a standard MP3 or WAV file and try again."
-        await update.message.reply_text(error_msg)
+        await update.message.reply_text("❌ I couldn’t read that audio file. Please try again with MP3/WAV.")
         return
 
     freq = detect_pitch(y, sr)
@@ -102,17 +110,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     note_name, cents_off, target_freq = hz_to_note(freq)
     cents_abs = abs(cents_off)
-
     tuning_indicator = "✨" if cents_abs < 5 else ("📈" if cents_off > 0 else "📉")
     tuning_text = "Perfectly in tune!" if cents_abs < 5 else (
         f"{tuning_indicator} {cents_abs:.1f} cents {'sharp' if cents_off > 0 else 'flat'}"
     )
 
     msg = (
-        f" *Detected Note:* {note_name}\n"
-        f" *Frequency:* {freq:.2f} Hz\n"
-        f" *Target Note Frequency:* {target_freq:.2f} Hz\n"
-        f" *Tuning Status:* {tuning_text}"
+        f"*Detected Note:* {note_name}\n"
+        f"*Frequency:* {freq:.2f} Hz\n"
+        f"*Target Note Frequency:* {target_freq:.2f} Hz\n"
+        f"*Tuning Status:* {tuning_text}"
     )
     await update.message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
 
@@ -121,7 +128,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fig, ax = plt.subplots(figsize=(8, 3))
         duration_to_plot = min(len(y) / sr, 5)
         samples_to_plot = int(duration_to_plot * sr)
-
         ax.plot(y[:samples_to_plot])
         ax.set_title(f"Waveform (First {duration_to_plot:.1f}s) – {note_name}", fontsize=14)
         ax.set_xlabel("Time (Samples)")
@@ -139,56 +145,53 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not generate the waveform visualization.")
 
 
+# ------------------ FastAPI + Telegram Setup ------------------
 app = FastAPI(title="TuneTrainerBot Webhook")
-
 tg_app = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).build()
-
 tg_app.add_handler(CommandHandler("start", start))
 tg_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
-
 
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(req: Request):
     try:
         data = await req.json()
-    except Exception as e:
-        logger.error("Failed to parse request body: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    try:
         update = Update.de_json(data, tg_app.bot)
+        if not tg_app._initialized:
+            await tg_app.initialize()
         await tg_app.process_update(update)
-    except TelegramError as e:
-        logger.error(f"Telegram error while processing update: {e}")
     except Exception as e:
-        logger.exception("Exception while processing update: %s", e)
-
+        logger.exception("Error while processing webhook: %s", e)
     return {"status": "ok"}
-
 
 @app.get("/")
 async def root():
-    return {"status": "TuneTrainerBot is alive and ready for webhooks!"}
-
+    return {"status": "TuneTrainerBot is alive!"}
 
 @app.on_event("startup")
 async def on_startup():
-    await tg_app.initialize()
-    await tg_app.start()
-
-    if WEBHOOK_URL:
-        full_webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
-        try:
+    try:
+        await tg_app.initialize()
+        if WEBHOOK_URL:
+            full_webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
             await tg_app.bot.set_webhook(full_webhook_url)
-            logger.info("Webhook successfully set to: %s", full_webhook_url)
-        except Exception as e:
-            logger.exception("Failed to set webhook: %s", e)
-            raise e
-    else:
-        logger.warning("WEBHOOK_URL not set. Webhook was not registered with Telegram.")
+            logger.info("✅ Webhook set to: %s", full_webhook_url)
+        else:
+            logger.warning("⚠️ WEBHOOK_URL not set. Will rely on polling if needed.")
+    except Exception as e:
+        logger.exception("Webhook setup failed: %s", e)
 
-
+# ------------------ Main Entry (Render Safe) ------------------
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8000))
-    logger.info("Starting uvicorn server on port %s", PORT)
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
+    try:
+        if WEBHOOK_URL:
+            logger.info("🚀 Starting FastAPI server with webhook on port %s", PORT)
+            uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")
+        else:
+            logger.info("🔁 No webhook URL found — running in polling mode.")
+            import asyncio
+            asyncio.run(tg_app.run_polling())
+    except Exception as e:
+        logger.error("❌ Startup failed — switching to polling mode: %s", e)
+        import asyncio
+        asyncio.run(tg_app.run_polling())
