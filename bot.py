@@ -3,16 +3,20 @@ import numpy as np
 import librosa
 import matplotlib.pyplot as plt
 from telegram import Update, constants
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, AIORateLimiter
 import io
 import os
 import logging
 
+# --- Logging setup ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
+
+# --- Pitch detection helpers ---
 def detect_pitch(audio: np.ndarray, sr: int):
     if audio is None:
         return None
@@ -22,6 +26,7 @@ def detect_pitch(audio: np.ndarray, sr: int):
     if len(f0_series) == 0:
         return None
     return float(np.median(f0_series))
+
 
 def hz_to_note(freq: float):
     if not freq or freq <= 0:
@@ -34,6 +39,8 @@ def hz_to_note(freq: float):
     target_freq = 440.0 * (2 ** ((nearest_midi - 69) / 12))
     return note_name, cents_off, target_freq
 
+
+# --- Telegram bot handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎺 Welcome to *TuneTrainerBot!* 🎶\n\n"
@@ -44,6 +51,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Try it now!",
         parse_mode=constants.ParseMode.MARKDOWN
     )
+
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your audio... one moment! 🎼")
@@ -65,20 +73,15 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with io.BytesIO() as buf:
             await file.download_to_memory(out=buf)
             buf.seek(0)
-            
-            # librosa can handle OGG, MP3, WAV directly with soundfile backend
             y, sr = librosa.load(buf, sr=None, mono=True)
-
     except Exception as e:
         logger.error(f"Error loading {file_type} from user {update.effective_user.id}: {e}")
-        error_msg = f"❌ Sorry, I had trouble reading that audio file ({file_type}). "
-        error_msg += "Please ensure it's a valid audio file and try again."
-        await update.message.reply_text(error_msg)
+        await update.message.reply_text(f"❌ Sorry, I couldn't read that file ({file_type}). Try again with MP3/WAV.")
         return
 
     freq = detect_pitch(y, sr)
     if freq is None:
-        await update.message.reply_text("😕 I couldn't detect a clear pitch. Try a sustained tone or single note.")
+        await update.message.reply_text("😕 I couldn't detect a clear pitch. Try a sustained note.")
         return
 
     note_name, cents_off, target_freq = hz_to_note(freq)
@@ -98,6 +101,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         plt.style.use('seaborn-v0_8-whitegrid')
+    except Exception:
+        plt.style.use('seaborn-whitegrid')
+
+    try:
         fig, ax = plt.subplots(figsize=(8, 3))
         duration_to_plot = min(len(y) / sr, 5)
         samples_to_plot = int(duration_to_plot * sr)
@@ -106,15 +113,18 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax.set_xlabel("Time (Samples)")
         ax.set_ylabel("Amplitude")
         ax.grid(True, alpha=0.3)
+
         img_buf = io.BytesIO()
         plt.savefig(img_buf, format="png", bbox_inches='tight')
         plt.close(fig)
         img_buf.seek(0)
         await update.message.reply_photo(img_buf, caption="📈 Audio Waveform Visualization")
     except Exception as e:
-        logger.error(f"Error generating or sending photo: {e}")
+        logger.error(f"Error generating waveform plot: {e}")
         await update.message.reply_text("⚠️ Could not generate the waveform visualization.")
 
+
+# --- Main startup ---
 def main():
     TOKEN = os.getenv("BOT_TOKEN")
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -124,25 +134,34 @@ def main():
         logger.error("❌ BOT_TOKEN environment variable not set.")
         return
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .rate_limiter(AIORateLimiter())
+        .build()
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
     if WEBHOOK_URL:
-        logger.info(f"Using Webhook URL: {WEBHOOK_URL} on port: {PORT}")
+        full_webhook = f"{WEBHOOK_URL}/{TOKEN}"
+        logger.info(f"🌐 Starting TuneTrainerBot in Webhook mode: {full_webhook}")
         try:
             app.run_webhook(
                 listen="0.0.0.0",
                 port=PORT,
                 url_path=TOKEN,
-                webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+                webhook_url=full_webhook,
             )
-            logger.info("🚀 TuneTrainerBot started successfully with internal Webhook!")
         except Exception as e:
-            logger.error(f"Failed to start internal webhook: {e}")
+            logger.error(f"⚠️ Failed to start webhook: {e}")
+            logger.info("Switching to polling mode instead...")
+            app.run_polling()
     else:
-        logger.info("🤖 TuneTrainerBot starting in Polling mode...")
+        logger.info("🤖 WEBHOOK_URL not set — starting in Polling mode.")
         app.run_polling()
+
 
 if __name__ == "__main__":
     main()
