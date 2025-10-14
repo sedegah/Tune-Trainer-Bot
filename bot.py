@@ -1,6 +1,7 @@
 import os
 import io
 import math
+import tempfile
 import logging
 import numpy as np
 import librosa
@@ -8,7 +9,14 @@ import soundfile as sf
 import matplotlib.pyplot as plt
 from fastapi import FastAPI, Request
 from telegram import Update, constants
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, AIORateLimiter
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    AIORateLimiter,
+)
 
 # --- Logging setup ---
 logging.basicConfig(
@@ -17,14 +25,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Suppress annoying warnings ---
+# --- Suppress unnecessary warnings ---
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="librosa")
 
 # --- FastAPI setup ---
 app_fastapi = FastAPI()
 
-# --- Visible homepage route ---
 @app_fastapi.get("/")
 async def home():
     return {"status": "🎺 TuneTrainerBot is live and webhook active!"}
@@ -68,55 +75,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=constants.ParseMode.MARKDOWN,
     )
 
+# --- Hardened Audio Handler ---
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your audio... one moment! 🎼")
 
-    file = None
-    file_type = "unknown audio"
-
-    if update.message.voice:
-        file = await update.message.voice.get_file()
-        file_type = "voice note (OGG/Opus)"
-    elif update.message.audio:
-        file = await update.message.audio.get_file()
-        file_type = f"audio file ({update.message.audio.mime_type or 'unknown MIME'})"
-    else:
-        await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧",
-                                        parse_mode=constants.ParseMode.MARKDOWN)
-        return
-
     try:
-        buf = io.BytesIO()
-        await file.download_to_memory(out=buf)
-        buf.seek(0)
+        if update.message.voice:
+            file = await update.message.voice.get_file()
+            suffix = ".ogg"
+        elif update.message.audio:
+            file = await update.message.audio.get_file()
+            suffix = ".mp3"
+        else:
+            await update.message.reply_text(
+                "Please send a *voice note* or *audio file!* 🎧",
+                parse_mode=constants.ParseMode.MARKDOWN,
+            )
+            return
 
-        # Try using soundfile first (handles OGG/MP3/WAV better)
+        # 🔹 Save to temporary file instead of in-memory buffer
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            await file.download_to_drive(custom_path=tmp.name)
+            tmp_path = tmp.name
+
+        # 🔹 Load safely
         try:
-            y, sr = sf.read(buf, always_2d=False)
-            if isinstance(y, np.ndarray) and y.ndim > 1:
+            y, sr = sf.read(tmp_path, always_2d=False)
+            if y.ndim > 1:
                 y = np.mean(y, axis=1)
         except Exception:
-            buf.seek(0)
-            y, sr = librosa.load(buf, sr=None, mono=True)
+            y, sr = librosa.load(tmp_path, sr=None, mono=True)
 
         if y is None or len(y) == 0:
             raise ValueError("Empty audio buffer")
 
     except Exception as e:
-        logger.error(f"Error loading {file_type}: {e}")
-        await update.message.reply_text("❌ Sorry, I couldn't read that file. Try again with MP3/WAV.")
+        logger.error(f"❌ Error loading audio: {e}")
+        await update.message.reply_text("❌ I couldn’t read that audio file. Try again with MP3 or OGG.")
         return
 
+    # --- Pitch detection ---
     freq = detect_pitch(y, sr)
     if freq is None:
-        await update.message.reply_text("😕 I couldn't detect a clear pitch. Try a sustained note.")
+        await update.message.reply_text("😕 I couldn’t detect a clear pitch. Try a sustained tone.")
         return
 
     note_name, cents_off, target_freq = hz_to_note(freq)
     cents_abs = abs(cents_off)
     tuning_indicator = "✨" if cents_abs < 5 else ("📈" if cents_off > 0 else "📉")
-    tuning_text = "Perfectly in tune!" if cents_abs < 5 else (
-        f"{tuning_indicator} {cents_abs:.1f} cents {'sharp' if cents_off > 0 else 'flat'}"
+    tuning_text = (
+        "Perfectly in tune!" if cents_abs < 5
+        else f"{tuning_indicator} {cents_abs:.1f} cents {'sharp' if cents_off > 0 else 'flat'}"
     )
 
     msg = (
@@ -127,7 +136,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
 
-    # Waveform visualization
+    # --- Waveform Visualization ---
     try:
         plt.style.use("seaborn-v0_8-whitegrid")
         fig, ax = plt.subplots(figsize=(8, 3))
@@ -139,16 +148,16 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax.set_ylabel("Amplitude")
         ax.grid(True, alpha=0.3)
 
-        img_buf = io.BytesIO()
-        plt.savefig(img_buf, format="png", bbox_inches="tight")
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", bbox_inches="tight")
         plt.close(fig)
-        img_buf.seek(0)
-        await update.message.reply_photo(img_buf, caption="📈 Audio Waveform Visualization")
+        buf.seek(0)
+        await update.message.reply_photo(buf, caption="📈 Audio Waveform Visualization")
     except Exception as e:
-        logger.error(f"Waveform generation error: {e}")
+        logger.error(f"Waveform error: {e}")
         await update.message.reply_text("⚠️ Could not generate waveform visualization.")
 
-# --- Telegram Application ---
+# --- Telegram App Setup ---
 def build_app():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
@@ -169,7 +178,7 @@ async def webhook(request: Request, token: str):
     await telegram_app.process_update(update)
     return {"status": "ok"}
 
-# --- Startup fix ---
+# --- Startup event: set webhook ---
 @app_fastapi.on_event("startup")
 async def startup():
     TOKEN = os.getenv("BOT_TOKEN")
@@ -178,9 +187,9 @@ async def startup():
         full_url = f"{WEBHOOK_URL}/{TOKEN}"
         await telegram_app.initialize()
         await telegram_app.bot.set_webhook(url=full_url)
-        logger.info(f"✅ Webhook set successfully!")
+        logger.info(f"✅ Webhook set successfully at {full_url}")
 
-# --- Local run ---
+# --- Local run (Render entrypoint) ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
