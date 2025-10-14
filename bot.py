@@ -17,17 +17,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Suppress annoying warnings ---
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="librosa")
+
 # --- FastAPI setup ---
 app_fastapi = FastAPI()
 
-# --- Root endpoint for status ---
+# --- Visible homepage route ---
 @app_fastapi.get("/")
 async def home():
-    return {
-        "status": "ok",
-        "service": "TuneTrainer 🎺",
-        "message": "Bot is live and ready to process audio!"
-    }
+    return {"status": "🎺 TuneTrainerBot is live and webhook active!"}
 
 # --- Pitch detection helpers ---
 def detect_pitch(audio: np.ndarray, sr: int):
@@ -45,7 +45,6 @@ def detect_pitch(audio: np.ndarray, sr: int):
         return None
     return float(np.median(f0_series))
 
-
 def hz_to_note(freq: float):
     if not freq or freq <= 0:
         return None, None, None
@@ -56,7 +55,6 @@ def hz_to_note(freq: float):
     note_name = note_names[nearest_midi % 12] + str((nearest_midi // 12) - 1)
     target_freq = 440.0 * (2 ** ((nearest_midi - 69) / 12))
     return note_name, cents_off, target_freq
-
 
 # --- Telegram Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,7 +67,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Try it now!",
         parse_mode=constants.ParseMode.MARKDOWN,
     )
-
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your audio... one moment! 🎼")
@@ -84,10 +81,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.audio.get_file()
         file_type = f"audio file ({update.message.audio.mime_type or 'unknown MIME'})"
     else:
-        await update.message.reply_text(
-            "Please send a *voice note* or *audio file!* 🎧",
-            parse_mode=constants.ParseMode.MARKDOWN,
-        )
+        await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧",
+                                        parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     try:
@@ -153,7 +148,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Waveform generation error: {e}")
         await update.message.reply_text("⚠️ Could not generate waveform visualization.")
 
-
 # --- Telegram Application ---
 def build_app():
     TOKEN = os.getenv("BOT_TOKEN")
@@ -161,11 +155,9 @@ def build_app():
         raise RuntimeError("❌ BOT_TOKEN not set in environment variables.")
     return Application.builder().token(TOKEN).rate_limiter(AIORateLimiter()).build()
 
-
 telegram_app = build_app()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
-
 
 # --- Webhook route ---
 @app_fastapi.post("/{token}")
@@ -177,7 +169,6 @@ async def webhook(request: Request, token: str):
     await telegram_app.process_update(update)
     return {"status": "ok"}
 
-
 # --- Startup fix ---
 @app_fastapi.on_event("startup")
 async def startup():
@@ -187,8 +178,7 @@ async def startup():
         full_url = f"{WEBHOOK_URL}/{TOKEN}"
         await telegram_app.initialize()
         await telegram_app.bot.set_webhook(url=full_url)
-        logger.info(f"✅ Webhook set: {full_url}")
-
+        logger.info(f"✅ Webhook set successfully!")
 
 # --- Local run ---
 if __name__ == "__main__":
