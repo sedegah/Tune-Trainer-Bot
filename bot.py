@@ -1,12 +1,13 @@
+import os
+import io
 import math
+import logging
 import numpy as np
 import librosa
 import matplotlib.pyplot as plt
+from fastapi import FastAPI, Request
 from telegram import Update, constants
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, AIORateLimiter
-import io
-import os
-import logging
 
 # --- Logging setup ---
 logging.basicConfig(
@@ -15,13 +16,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- FastAPI setup for webhook ---
+app_fastapi = FastAPI()
 
 # --- Pitch detection helpers ---
 def detect_pitch(audio: np.ndarray, sr: int):
     if audio is None:
         return None
     y = audio.astype(np.float32)
-    f0_series = librosa.yin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr)
+    f0_series = librosa.yin(
+        y,
+        fmin=librosa.note_to_hz("C2"),
+        fmax=librosa.note_to_hz("C7"),
+        sr=sr,
+    )
     f0_series = f0_series[~np.isnan(f0_series)]
     if len(f0_series) == 0:
         return None
@@ -40,16 +48,16 @@ def hz_to_note(freq: float):
     return note_name, cents_off, target_freq
 
 
-# --- Telegram bot handlers ---
+# --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎺 Welcome to *TuneTrainerBot!* 🎶\n\n"
+        "🎺 *Welcome to TuneTrainerBot!* 🎶\n\n"
         "Send me a *voice note* or *audio file* (MP3/WAV/OGG) and I'll tell you:\n"
         "• The musical note 🎵\n"
         "• How sharp/flat you are 📈\n"
         "• Fundamental frequency (Hz)\n\n"
         "Try it now!",
-        parse_mode=constants.ParseMode.MARKDOWN
+        parse_mode=constants.ParseMode.MARKDOWN,
     )
 
 
@@ -66,7 +74,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.audio.get_file()
         file_type = f"audio file ({update.message.audio.mime_type or 'unknown MIME'})"
     else:
-        await update.message.reply_text("Please send a *voice note* or *audio file!* 🎧", parse_mode=constants.ParseMode.MARKDOWN)
+        await update.message.reply_text(
+            "Please send a *voice note* or *audio file!* 🎧",
+            parse_mode=constants.ParseMode.MARKDOWN,
+        )
         return
 
     try:
@@ -75,8 +86,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buf.seek(0)
             y, sr = librosa.load(buf, sr=None, mono=True)
     except Exception as e:
-        logger.error(f"Error loading {file_type} from user {update.effective_user.id}: {e}")
-        await update.message.reply_text(f"❌ Sorry, I couldn't read that file ({file_type}). Try again with MP3/WAV.")
+        logger.error(f"Error loading {file_type}: {e}")
+        await update.message.reply_text("❌ Sorry, I couldn't read that file. Try again with MP3/WAV.")
         return
 
     freq = detect_pitch(y, sr)
@@ -99,10 +110,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
 
+    # --- Plot waveform ---
     try:
-        plt.style.use('seaborn-v0_8-whitegrid')
+        plt.style.use("seaborn-v0_8-whitegrid")
     except Exception:
-        plt.style.use('seaborn-whitegrid')
+        plt.style.use("seaborn-whitegrid")
 
     try:
         fig, ax = plt.subplots(figsize=(8, 3))
@@ -115,53 +127,54 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ax.grid(True, alpha=0.3)
 
         img_buf = io.BytesIO()
-        plt.savefig(img_buf, format="png", bbox_inches='tight')
+        plt.savefig(img_buf, format="png", bbox_inches="tight")
         plt.close(fig)
         img_buf.seek(0)
         await update.message.reply_photo(img_buf, caption="📈 Audio Waveform Visualization")
     except Exception as e:
         logger.error(f"Error generating waveform plot: {e}")
-        await update.message.reply_text("⚠️ Could not generate the waveform visualization.")
+        await update.message.reply_text("⚠️ Could not generate waveform visualization.")
 
 
-# --- Main startup ---
-def main():
+# --- Create Telegram application ---
+def build_app():
     TOKEN = os.getenv("BOT_TOKEN")
-    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    PORT = int(os.environ.get("PORT", "5000"))
-
     if not TOKEN:
-        logger.error("❌ BOT_TOKEN environment variable not set.")
-        return
-
-    app = (
+        raise RuntimeError("❌ BOT_TOKEN not set in environment variables.")
+    return (
         Application.builder()
         .token(TOKEN)
         .rate_limiter(AIORateLimiter())
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
-    if WEBHOOK_URL:
-        full_webhook = f"{WEBHOOK_URL}/{TOKEN}"
-        logger.info(f"🌐 Starting TuneTrainerBot in Webhook mode: {full_webhook}")
-        try:
-            app.run_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=TOKEN,
-                webhook_url=full_webhook,
-            )
-        except Exception as e:
-            logger.error(f"⚠️ Failed to start webhook: {e}")
-            logger.info("Switching to polling mode instead...")
-            app.run_polling()
-    else:
-        logger.info("🤖 WEBHOOK_URL not set — starting in Polling mode.")
-        app.run_polling()
+telegram_app = build_app()
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+
+# --- Webhook Route for Render ---
+@app_fastapi.post("/{token}")
+async def webhook(request: Request, token: str):
+    if token != os.getenv("BOT_TOKEN"):
+        return {"status": "unauthorized"}
+    data = await request.json()
+    update = Update.de_json(data, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return {"status": "ok"}
+
+
+# --- Startup event for webhook registration ---
+@app_fastapi.on_event("startup")
+async def startup():
+    TOKEN = os.getenv("BOT_TOKEN")
+    WEBHOOK_URL = "https://tune-trainer-bot.onrender.com"
+    if TOKEN:
+        full_url = f"{WEBHOOK_URL}/{TOKEN}"
+        await telegram_app.bot.set_webhook(url=full_url)
+        logger.info(f"✅ Webhook set: {full_url}")
 
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run(app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
