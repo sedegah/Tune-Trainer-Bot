@@ -17,6 +17,8 @@ from telegram.ext import (
     ContextTypes,
     AIORateLimiter,
 )
+import asyncio
+import warnings
 
 # --- Logging setup ---
 logging.basicConfig(
@@ -25,8 +27,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Suppress unnecessary warnings ---
-import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="librosa")
 
 # --- FastAPI setup ---
@@ -80,7 +80,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- Hardened Audio Handler ---
+# --- Audio Handler ---
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your audio... one moment! 🎼")
 
@@ -103,7 +103,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tmp_path = tmp.name
             await file.download_to_drive(custom_path=tmp_path)
 
-        # Load audio robustly
         try:
             y, sr = sf.read(tmp_path, always_2d=False)
             if y.ndim > 1:
@@ -166,7 +165,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not generate waveform visualization.")
 
 
-# --- Telegram App Setup ---
+# --- Telegram Application ---
 def build_app():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
@@ -176,10 +175,7 @@ def build_app():
 
 telegram_app = build_app()
 telegram_app.add_handler(CommandHandler("start", start))
-
-# 🔹 Only trigger audio handler for real voice/audio (not commands)
-audio_filter = (filters.VOICE | filters.AUDIO) & ~filters.COMMAND
-telegram_app.add_handler(MessageHandler(audio_filter, handle_audio))
+telegram_app.add_handler(MessageHandler((filters.VOICE | filters.AUDIO) & ~filters.COMMAND, handle_audio))
 
 
 # --- Webhook route ---
@@ -193,7 +189,7 @@ async def webhook(request: Request, token: str):
     return {"status": "ok"}
 
 
-# --- Startup event: set webhook ---
+# --- Startup event: initialize & run dispatcher loop ---
 @app_fastapi.on_event("startup")
 async def startup():
     TOKEN = os.getenv("BOT_TOKEN")
@@ -203,6 +199,9 @@ async def startup():
         await telegram_app.initialize()
         await telegram_app.bot.set_webhook(url=full_url)
         logger.info(f"✅ Webhook set successfully at {full_url}")
+        # NEW — start background update loop
+        asyncio.create_task(telegram_app.start())
+        logger.info("🚀 Telegram application started and polling via webhook.")
 
 
 # --- Local run (Render entrypoint) ---
