@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- FastAPI setup for webhook ---
+# --- FastAPI setup ---
 app_fastapi = FastAPI()
 
 # --- Pitch detection helpers ---
@@ -48,7 +48,7 @@ def hz_to_note(freq: float):
     return note_name, cents_off, target_freq
 
 
-# --- Telegram Bot Handlers ---
+# --- Telegram Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎺 *Welcome to TuneTrainerBot!* 🎶\n\n"
@@ -110,7 +110,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode=constants.ParseMode.MARKDOWN)
 
-    # --- Plot waveform ---
     try:
         plt.style.use("seaborn-v0_8-whitegrid")
     except Exception:
@@ -136,7 +135,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Could not generate waveform visualization.")
 
 
-# --- Create Telegram application ---
+# --- Telegram Application ---
 def build_app():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
@@ -153,7 +152,7 @@ telegram_app = build_app()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
-# --- Webhook Route for Render ---
+# --- Webhook route ---
 @app_fastapi.post("/{token}")
 async def webhook(request: Request, token: str):
     if token != os.getenv("BOT_TOKEN"):
@@ -164,17 +163,19 @@ async def webhook(request: Request, token: str):
     return {"status": "ok"}
 
 
-# --- Startup event for webhook registration ---
+# --- Startup fix (initialize Application properly) ---
 @app_fastapi.on_event("startup")
 async def startup():
     TOKEN = os.getenv("BOT_TOKEN")
     WEBHOOK_URL = "https://tune-trainer-bot.onrender.com"
     if TOKEN:
         full_url = f"{WEBHOOK_URL}/{TOKEN}"
+        await telegram_app.initialize()  # ✅ important fix
         await telegram_app.bot.set_webhook(url=full_url)
         logger.info(f"✅ Webhook set: {full_url}")
 
 
+# --- Run locally (Render will handle this automatically) ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app_fastapi, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
