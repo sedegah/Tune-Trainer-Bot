@@ -1,4 +1,4 @@
-python-telegram-bot==21.6
+python-telegram-bot[rate-limiter]==21.6
 librosa==0.10.1
 matplotlib==3.9.2
 numpy==1.26.4
