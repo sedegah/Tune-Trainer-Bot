@@ -7,8 +7,16 @@ import numpy as np
 import librosa
 import soundfile as sf
 import matplotlib.pyplot as plt
+from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, constants
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    AIORateLimiter,
+)
 import warnings
 import asyncio
 
@@ -17,8 +25,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("TuneTrainerBot")
 warnings.filterwarnings("ignore", category=UserWarning, module="librosa")
+
+# --- Environment ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN environment variable not set!")
 
 # --- Globals ---
 processing_messages = set()
@@ -124,9 +138,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in processing_messages:
         return
     processing_messages.add(message_id)
-    msg = await update.message.reply_text("🎵 Processing your audio... one moment!")
+    msg = await update.message.reply_text("🎵 Processing your audio... one moment! 🎼")
     tmp_path = None
-
     try:
         if update.message.voice:
             file = await update.message.voice.get_file()
@@ -156,7 +169,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(y) > 30*sr:
             y = y[:30*sr]
 
-        # Run CPU-heavy processing in threads
         freq, key_info = await asyncio.to_thread(lambda: (detect_pitch(y,sr), detect_key(y,sr)))
         note_name, cents_off, target_freq = hz_to_note(freq)
         key_name, key_conf = key_info
@@ -177,7 +189,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await msg.edit_text(response_msg, parse_mode=constants.ParseMode.MARKDOWN)
 
-        # Waveform
         buf = await asyncio.to_thread(plot_waveform, y, sr, note_name, key_name)
         await update.message.reply_photo(buf, caption=f"📊 Waveform\nNote: {note_name} | Key: {key_name}")
 
@@ -190,20 +201,40 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: os.remove(tmp_path)
             except: pass
 
-# --- Run Bot ---
-def main():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        logger.error("Set TELEGRAM_BOT_TOKEN in environment!")
-        return
+# --- FastAPI + Telegram Webhook ---
+app = FastAPI(title="TuneTrainerBot Webhook")
+telegram_app = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).build()
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("help", help_command))
+telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
 
-    app = ApplicationBuilder().token(token).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+@app.get("/")
+async def home():
+    return {"status": "🎺 TuneTrainerBot is live!"}
 
-    logger.info("🤖 Bot is running...")
-    app.run_polling()
+@app.post(f"/{BOT_TOKEN}")
+async def telegram_webhook(request: Request):
+    try:
+        data = await request.json()
+        update = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(update)
+    except Exception as e:
+        logger.exception("Webhook error: %s", e)
+        raise HTTPException(status_code=500, detail="Error processing update")
+    return {"status": "ok"}
+
+@app.on_event("startup")
+async def on_startup():
+    await telegram_app.initialize()
+    if WEBHOOK_URL:
+        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        await telegram_app.bot.set_webhook(url=webhook_url)
+        logger.info(f"✅ Webhook set: {webhook_url}")
+    else:
+        logger.warning("⚠️ WEBHOOK_URL not set; bot won't receive updates via webhook")
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    port = int(os.getenv("PORT", 10000))
+    logger.info(f"🚀 Starting TuneTrainerBot on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
