@@ -1,8 +1,7 @@
 import os
 import io
-import math
-import tempfile
 import logging
+import tempfile
 import numpy as np
 import librosa
 import soundfile as sf
@@ -23,34 +22,11 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
 processing_messages = set()
+
+# Templates for key detection
 MAJOR_TEMPLATE = np.array([1,0,1,0,1,1,0,1,0,1,0,1])
 MINOR_TEMPLATE = np.array([1,0,1,1,0,1,0,1,1,0,1,0])
 NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
-
-def detect_pitch(audio: np.ndarray, sr: int):
-    try:
-        y = audio.astype(np.float32)
-        if np.max(np.abs(y)) > 0:
-            y /= np.max(np.abs(y))
-        f0_series = librosa.yin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr)
-        f0_series = f0_series[~np.isnan(f0_series)]
-        f0_series = f0_series[f0_series > 0]
-        if len(f0_series) == 0:
-            return None
-        return float(np.median(f0_series))
-    except Exception as e:
-        logger.error(f"Pitch detection error: {e}")
-        return None
-
-def hz_to_note(freq: float):
-    if not freq or freq <= 0:
-        return None, None, None
-    midi_num = 69 + 12*math.log2(freq/440.0)
-    nearest_midi = int(round(midi_num))
-    cents_off = (midi_num - nearest_midi) * 100
-    note_name = NOTE_NAMES[nearest_midi % 12] + str((nearest_midi//12)-1)
-    target_freq = 440.0 * 2**((nearest_midi-69)/12)
-    return note_name, cents_off, target_freq
 
 def get_chroma(y: np.ndarray, sr: int):
     S = np.abs(librosa.stft(y, n_fft=4096))
@@ -58,7 +34,7 @@ def get_chroma(y: np.ndarray, sr: int):
     return np.mean(chroma, axis=1)
 
 def detect_key(y: np.ndarray, sr: int):
-    y = y[:sr*30]
+    y = y[:sr*30]  # Use first 30s for analysis
     chroma = get_chroma(y, sr)
     chroma /= np.linalg.norm(chroma)
     best_score = -1
@@ -91,7 +67,7 @@ def plot_waveform(y, sr, note_name, key_name):
     samples_to_plot = int(duration_to_plot*sr)
     time_axis = np.linspace(0,duration_to_plot,samples_to_plot)
     ax.plot(time_axis, y[:samples_to_plot], linewidth=0.5)
-    ax.set_title(f"Waveform – Note: {note_name} | Key: {key_name}", fontsize=14, fontweight='bold')
+    ax.set_title(f"Waveform – Key: {key_name}", fontsize=14, fontweight='bold')
     ax.set_xlabel("Time (seconds)")
     ax.set_ylabel("Amplitude")
     ax.grid(True, alpha=0.3)
@@ -102,17 +78,18 @@ def plot_waveform(y, sr, note_name, key_name):
     buf.seek(0)
     return buf
 
+# Telegram bot commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome to TuneTrainerBot!\n\nSend a voice note or audio file and I'll tell you:\n"
-        "• The musical note\n• How sharp/flat you are\n• Frequency\n• Key\n• Suggested chords\n\n"
+        "• The song's key (Major/Minor)\n• Confidence\n• Suggested chords\n\n"
         "Commands:\n/start /help",
         parse_mode=constants.ParseMode.MARKDOWN
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Send a clear, sustained note.\nAudio files under 30 seconds work best.\nSupported formats: MP3, WAV, OGG",
+        "Send a clear audio clip (up to 30s) of a song.\nSupported formats: MP3, WAV, OGG",
         parse_mode=constants.ParseMode.MARKDOWN
     )
 
@@ -121,7 +98,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in processing_messages:
         return
     processing_messages.add(message_id)
-    msg = await update.message.reply_text("Processing your audio...")
+    msg = await update.message.reply_text("Processing your audio to detect the key...")
     tmp_path = None
     try:
         if update.message.voice:
@@ -131,40 +108,35 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await update.message.audio.get_file()
             suffix = ".mp3"
         else:
-            await msg.edit_text("Send a voice note or audio file!", parse_mode=constants.ParseMode.MARKDOWN)
+            await msg.edit_text("Send a voice note or audio file!")
             return
+
         if file.file_size > 10*1024*1024:
             await msg.edit_text("File too large!")
             return
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = tmp.name
             await file.download_to_drive(custom_path=tmp_path)
-        try:
-            y, sr = sf.read(tmp_path, always_2d=False)
-            if y.ndim > 1:
-                y = np.mean(y, axis=1)
-        except:
-            y, sr = librosa.load(tmp_path, sr=22050, mono=True, duration=30)
+
+        y, sr = librosa.load(tmp_path, sr=22050, mono=True, duration=30)
         if len(y) > 30*sr:
             y = y[:30*sr]
-        freq, key_info = await asyncio.to_thread(lambda: (detect_pitch(y,sr), detect_key(y,sr)))
-        note_name, cents_off, target_freq = hz_to_note(freq)
-        key_name, key_conf = key_info
+
+        key_name, key_conf = await asyncio.to_thread(lambda: detect_key(y, sr))
         chords = suggest_chords(key_name)
-        tuning_text = ""
-        if cents_off is not None:
-            cents_abs = abs(cents_off)
-            tuning_text = "Perfectly in tune!" if cents_abs<5 else f"{cents_abs:.1f} cents {'sharp' if cents_off>0 else 'flat'}"
+
         response_msg = (
-            f"Detected Note: {note_name}\n"
-            f"Frequency: {freq:.2f} Hz\n"
-            f"Tuning Status: {tuning_text}\n"
-            f"Estimated Key: {key_name} ({key_conf*100:.0f}% confidence)\n"
+            f"Estimated Key: {key_name}\n"
+            f"Confidence: {key_conf*100:.0f}%\n"
             f"Suggested Chords: {', '.join(chords)}"
         )
+
         await msg.edit_text(response_msg, parse_mode=constants.ParseMode.MARKDOWN)
-        buf = await asyncio.to_thread(plot_waveform, y, sr, note_name, key_name)
-        await update.message.reply_photo(buf, caption=f"Waveform\nNote: {note_name} | Key: {key_name}")
+
+        buf = await asyncio.to_thread(plot_waveform, y, sr, note_name="N/A", key_name=key_name)
+        await update.message.reply_photo(buf, caption=f"Waveform | Key: {key_name}")
+
     except Exception as e:
         logger.error(f"Processing error: {e}", exc_info=True)
         await msg.edit_text("Error during processing. Please try again.")
@@ -174,6 +146,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: os.remove(tmp_path)
             except: pass
 
+# FastAPI & Telegram setup
 app = FastAPI(title="TuneTrainerBot Webhook")
 telegram_app = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).build()
 telegram_app.add_handler(CommandHandler("start", start))
