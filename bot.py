@@ -9,45 +9,30 @@ import soundfile as sf
 import matplotlib.pyplot as plt
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update, constants
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    AIORateLimiter,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, AIORateLimiter
 import warnings
 import asyncio
 
-# --- Logging ---
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("TuneTrainerBot")
 warnings.filterwarnings("ignore", category=UserWarning, module="librosa")
 
-# --- Environment ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable not set!")
+    raise ValueError("BOT_TOKEN environment variable not set!")
 
-# --- Globals ---
 processing_messages = set()
 MAJOR_TEMPLATE = np.array([1,0,1,0,1,1,0,1,0,1,0,1])
 MINOR_TEMPLATE = np.array([1,0,1,1,0,1,0,1,1,0,1,0])
 NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
 
-# --- Audio Analysis ---
 def detect_pitch(audio: np.ndarray, sr: int):
     try:
         y = audio.astype(np.float32)
         if np.max(np.abs(y)) > 0:
             y /= np.max(np.abs(y))
-        f0_series = librosa.yin(y, fmin=librosa.note_to_hz("C2"),
-                                fmax=librosa.note_to_hz("C7"), sr=sr)
+        f0_series = librosa.yin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr)
         f0_series = f0_series[~np.isnan(f0_series)]
         f0_series = f0_series[f0_series > 0]
         if len(f0_series) == 0:
@@ -73,13 +58,16 @@ def get_chroma(y: np.ndarray, sr: int):
     return np.mean(chroma, axis=1)
 
 def detect_key(y: np.ndarray, sr: int):
-    y = y[:sr*10]  # first 10 seconds only
+    y = y[:sr*30]
     chroma = get_chroma(y, sr)
+    chroma /= np.linalg.norm(chroma)
     best_score = -1
     best_key = None
     for i, note in enumerate(NOTE_NAMES):
         for template, suffix in [(MAJOR_TEMPLATE, "Major"), (MINOR_TEMPLATE, "Minor")]:
-            score = np.dot(chroma, np.roll(template, i)) / (np.linalg.norm(chroma) * np.linalg.norm(template))
+            rolled_template = np.roll(template, i)
+            rolled_template = rolled_template / np.linalg.norm(rolled_template)
+            score = np.dot(chroma, rolled_template)
             if score > best_score:
                 best_score = score
                 best_key = f"{note} {suffix}"
@@ -96,7 +84,6 @@ def suggest_chords(key_name):
         chords = [NOTE_NAMES[(base_idx+i)%12]+suffix for i,suffix in zip([0,2,3,5,7,8,10], ["m","dim","","m","m","",""])]
     return chords
 
-# --- Waveform Plot ---
 def plot_waveform(y, sr, note_name, key_name):
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, ax = plt.subplots(figsize=(10,4))
@@ -115,11 +102,9 @@ def plot_waveform(y, sr, note_name, key_name):
     buf.seek(0)
     return buf
 
-# --- Telegram Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎺 *Welcome to TuneTrainerBot!* 🎶\n\n"
-        "Send me a voice note or audio file and I'll tell you:\n"
+        "Welcome to TuneTrainerBot!\n\nSend a voice note or audio file and I'll tell you:\n"
         "• The musical note\n• How sharp/flat you are\n• Frequency\n• Key\n• Suggested chords\n\n"
         "Commands:\n/start /help",
         parse_mode=constants.ParseMode.MARKDOWN
@@ -127,9 +112,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎼 Send a clear, sustained note.\n"
-        "Audio files under 30 seconds work best.\n"
-        "Supported formats: MP3, WAV, OGG",
+        "Send a clear, sustained note.\nAudio files under 30 seconds work best.\nSupported formats: MP3, WAV, OGG",
         parse_mode=constants.ParseMode.MARKDOWN
     )
 
@@ -138,7 +121,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in processing_messages:
         return
     processing_messages.add(message_id)
-    msg = await update.message.reply_text("🎵 Processing your audio... one moment! 🎼")
+    msg = await update.message.reply_text("Processing your audio...")
     tmp_path = None
     try:
         if update.message.voice:
@@ -148,60 +131,49 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await update.message.audio.get_file()
             suffix = ".mp3"
         else:
-            await msg.edit_text("⚠️ Send a voice note or audio file!", parse_mode=constants.ParseMode.MARKDOWN)
+            await msg.edit_text("Send a voice note or audio file!", parse_mode=constants.ParseMode.MARKDOWN)
             return
-
         if file.file_size > 10*1024*1024:
-            await msg.edit_text("⚠️ File too large!")
+            await msg.edit_text("File too large!")
             return
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = tmp.name
             await file.download_to_drive(custom_path=tmp_path)
-
         try:
             y, sr = sf.read(tmp_path, always_2d=False)
             if y.ndim > 1:
                 y = np.mean(y, axis=1)
         except:
             y, sr = librosa.load(tmp_path, sr=22050, mono=True, duration=30)
-
         if len(y) > 30*sr:
             y = y[:30*sr]
-
         freq, key_info = await asyncio.to_thread(lambda: (detect_pitch(y,sr), detect_key(y,sr)))
         note_name, cents_off, target_freq = hz_to_note(freq)
         key_name, key_conf = key_info
         chords = suggest_chords(key_name)
-
         tuning_text = ""
         if cents_off is not None:
             cents_abs = abs(cents_off)
-            tuning_indicator = "✨" if cents_abs < 5 else ("📈" if cents_off>0 else "📉")
-            tuning_text = "✨ Perfectly in tune!" if cents_abs<5 else f"{tuning_indicator} *{cents_abs:.1f} cents {'sharp' if cents_off>0 else 'flat'}*"
-
+            tuning_text = "Perfectly in tune!" if cents_abs<5 else f"{cents_abs:.1f} cents {'sharp' if cents_off>0 else 'flat'}"
         response_msg = (
-            f"🎵 *Detected Note:* {note_name}\n"
-            f"🎼 *Frequency:* {freq:.2f} Hz\n"
-            f"📊 *Tuning Status:* {tuning_text}\n"
-            f"🎹 *Estimated Key:* {key_name} ({key_conf*100:.0f}% confidence)\n"
-            f"🎸 *Suggested Chords:* {', '.join(chords)}"
+            f"Detected Note: {note_name}\n"
+            f"Frequency: {freq:.2f} Hz\n"
+            f"Tuning Status: {tuning_text}\n"
+            f"Estimated Key: {key_name} ({key_conf*100:.0f}% confidence)\n"
+            f"Suggested Chords: {', '.join(chords)}"
         )
         await msg.edit_text(response_msg, parse_mode=constants.ParseMode.MARKDOWN)
-
         buf = await asyncio.to_thread(plot_waveform, y, sr, note_name, key_name)
-        await update.message.reply_photo(buf, caption=f"📊 Waveform\nNote: {note_name} | Key: {key_name}")
-
+        await update.message.reply_photo(buf, caption=f"Waveform\nNote: {note_name} | Key: {key_name}")
     except Exception as e:
         logger.error(f"Processing error: {e}", exc_info=True)
-        await msg.edit_text("❌ Error during processing. Please try again.")
+        await msg.edit_text("Error during processing. Please try again.")
     finally:
         processing_messages.discard(message_id)
         if tmp_path and os.path.exists(tmp_path):
             try: os.remove(tmp_path)
             except: pass
 
-# --- FastAPI + Telegram Webhook ---
 app = FastAPI(title="TuneTrainerBot Webhook")
 telegram_app = Application.builder().token(BOT_TOKEN).rate_limiter(AIORateLimiter()).build()
 telegram_app.add_handler(CommandHandler("start", start))
@@ -210,7 +182,7 @@ telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_au
 
 @app.get("/")
 async def home():
-    return {"status": "🎺 TuneTrainerBot is live!"}
+    return {"status": "TuneTrainerBot is live!"}
 
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
@@ -229,12 +201,12 @@ async def on_startup():
     if WEBHOOK_URL:
         webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
         await telegram_app.bot.set_webhook(url=webhook_url)
-        logger.info(f"✅ Webhook set: {webhook_url}")
+        logger.info(f"Webhook set: {webhook_url}")
     else:
-        logger.warning("⚠️ WEBHOOK_URL not set; bot won't receive updates via webhook")
+        logger.warning("WEBHOOK_URL not set; bot won't receive updates via webhook")
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 10000))
-    logger.info(f"🚀 Starting TuneTrainerBot on port {port}")
+    logger.info(f"Starting TuneTrainerBot on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
