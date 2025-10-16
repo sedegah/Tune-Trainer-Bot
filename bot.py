@@ -91,9 +91,9 @@ def plot_waveform(y, sr, note_name, key_name):
     samples_to_plot = int(duration_to_plot*sr)
     time_axis = np.linspace(0,duration_to_plot,samples_to_plot)
     ax.plot(time_axis, y[:samples_to_plot], linewidth=0.5)
-    ax.set_title(f"Waveform – Note: {note_name} | Key: {key_name}", fontsize=14, fontweight='bold')
-    ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("Amplitude")
+    ax.set_title(f"🎵 Waveform – Note: {note_name} | Key: {key_name}", fontsize=14, fontweight='bold')
+    ax.set_xlabel("⏱ Time (seconds)")
+    ax.set_ylabel("🔊 Amplitude")
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0,duration_to_plot)
     buf = io.BytesIO()
@@ -104,15 +104,15 @@ def plot_waveform(y, sr, note_name, key_name):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Welcome to TuneTrainerBot!\n\nSend a voice note or audio file and I'll tell you:\n"
-        "• The musical note\n• How sharp/flat you are\n• Frequency\n• Key\n• Suggested chords\n\n"
+        "🎺 Welcome to TuneTrainerBot!\n\nSend a voice note or audio file and I'll tell you:\n"
+        "• 🎵 The musical note\n• 📏 How sharp/flat you are\n• 🎼 Frequency\n• 🎹 Key\n• 🎸 Suggested chords\n\n"
         "Commands:\n/start /help",
         parse_mode=constants.ParseMode.MARKDOWN
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Send a clear, sustained note.\nAudio files under 30 seconds work best.\nSupported formats: MP3, WAV, OGG",
+        "📌 Send a clear, sustained note.\n⏱ Audio files under 30 seconds work best.\n💾 Supported formats: MP3, WAV, OGG",
         parse_mode=constants.ParseMode.MARKDOWN
     )
 
@@ -121,7 +121,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in processing_messages:
         return
     processing_messages.add(message_id)
-    msg = await update.message.reply_text("Processing your audio...")
+    msg = await update.message.reply_text("🔄 Processing your audio...")
     tmp_path = None
     try:
         if update.message.voice:
@@ -131,10 +131,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             file = await update.message.audio.get_file()
             suffix = ".mp3"
         else:
-            await msg.edit_text("Send a voice note or audio file!", parse_mode=constants.ParseMode.MARKDOWN)
+            await msg.edit_text("❌ Send a voice note or audio file!", parse_mode=constants.ParseMode.MARKDOWN)
             return
         if file.file_size > 10*1024*1024:
-            await msg.edit_text("File too large!")
+            await msg.edit_text("⚠️ File too large!")
             return
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp_path = tmp.name
@@ -154,20 +154,20 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tuning_text = ""
         if cents_off is not None:
             cents_abs = abs(cents_off)
-            tuning_text = "Perfectly in tune!" if cents_abs<5 else f"{cents_abs:.1f} cents {'sharp' if cents_off>0 else 'flat'}"
+            tuning_text = "🎯 Perfectly in tune!" if cents_abs<5 else f"⚖️ {cents_abs:.1f} cents {'sharp' if cents_off>0 else 'flat'}"
         response_msg = (
-            f"Detected Note: {note_name}\n"
-            f"Frequency: {freq:.2f} Hz\n"
-            f"Tuning Status: {tuning_text}\n"
-            f"Estimated Key: {key_name} ({key_conf*100:.0f}% confidence)\n"
-            f"Suggested Chords: {', '.join(chords)}"
+            f"🎵 Detected Note: {note_name}\n"
+            f"🎼 Frequency: {freq:.2f} Hz\n"
+            f"📏 Tuning Status: {tuning_text}\n"
+            f"🎹 Estimated Key: {key_name} ({key_conf*100:.0f}% confidence)\n"
+            f"🎸 Suggested Chords: {', '.join(chords)}"
         )
         await msg.edit_text(response_msg, parse_mode=constants.ParseMode.MARKDOWN)
         buf = await asyncio.to_thread(plot_waveform, y, sr, note_name, key_name)
-        await update.message.reply_photo(buf, caption=f"Waveform\nNote: {note_name} | Key: {key_name}")
+        await update.message.reply_photo(buf, caption=f"🎵 Waveform\nNote: {note_name} | Key: {key_name}")
     except Exception as e:
         logger.error(f"Processing error: {e}", exc_info=True)
-        await msg.edit_text("Error during processing. Please try again.")
+        await msg.edit_text("❌ Error during processing. Please try again.")
     finally:
         processing_messages.discard(message_id)
         if tmp_path and os.path.exists(tmp_path):
@@ -182,7 +182,7 @@ telegram_app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_au
 
 @app.get("/")
 async def home():
-    return {"status": "TuneTrainerBot is live!"}
+    return {"status": "🎺 TuneTrainerBot is live!"}
 
 @app.post(f"/{BOT_TOKEN}")
 async def telegram_webhook(request: Request):
