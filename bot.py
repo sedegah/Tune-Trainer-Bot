@@ -7,19 +7,12 @@ import numpy as np
 import librosa
 import soundfile as sf
 import matplotlib.pyplot as plt
-from fastapi import FastAPI, Request
 from telegram import Update, constants
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import warnings
 import asyncio
 
-# Logging setup
+# --- Logging ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -27,19 +20,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=UserWarning, module="librosa")
 
-app_fastapi = FastAPI()
+# --- Globals ---
 processing_messages = set()
-
 MAJOR_TEMPLATE = np.array([1,0,1,0,1,1,0,1,0,1,0,1])
 MINOR_TEMPLATE = np.array([1,0,1,1,0,1,0,1,1,0,1,0])
 NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"]
 
+# --- Audio Analysis ---
 def detect_pitch(audio: np.ndarray, sr: int):
     try:
         y = audio.astype(np.float32)
         if np.max(np.abs(y)) > 0:
             y /= np.max(np.abs(y))
-        f0_series = librosa.yin(y, fmin=librosa.note_to_hz("C2"), fmax=librosa.note_to_hz("C7"), sr=sr)
+        f0_series = librosa.yin(y, fmin=librosa.note_to_hz("C2"),
+                                fmax=librosa.note_to_hz("C7"), sr=sr)
         f0_series = f0_series[~np.isnan(f0_series)]
         f0_series = f0_series[f0_series > 0]
         if len(f0_series) == 0:
@@ -88,13 +82,31 @@ def suggest_chords(key_name):
         chords = [NOTE_NAMES[(base_idx+i)%12]+suffix for i,suffix in zip([0,2,3,5,7,8,10], ["m","dim","","m","m","",""])]
     return chords
 
+# --- Waveform Plot ---
+def plot_waveform(y, sr, note_name, key_name):
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, ax = plt.subplots(figsize=(10,4))
+    duration_to_plot = min(len(y)/sr,5)
+    samples_to_plot = int(duration_to_plot*sr)
+    time_axis = np.linspace(0,duration_to_plot,samples_to_plot)
+    ax.plot(time_axis, y[:samples_to_plot], linewidth=0.5)
+    ax.set_title(f"Waveform – Note: {note_name} | Key: {key_name}", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Time (seconds)")
+    ax.set_ylabel("Amplitude")
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0,duration_to_plot)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", dpi=100)
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
 # --- Telegram Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎺 *Welcome to TuneTrainerBot!* 🎶\n\n"
         "Send me a voice note or audio file and I'll tell you:\n"
-        "• The musical note\n• How sharp/flat you are\n"
-        "• Fundamental frequency (Hz)\n• Detected musical key\n• Suggested chords\n\n"
+        "• The musical note\n• How sharp/flat you are\n• Frequency\n• Key\n• Suggested chords\n\n"
         "Commands:\n/start /help",
         parse_mode=constants.ParseMode.MARKDOWN
     )
@@ -112,7 +124,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in processing_messages:
         return
     processing_messages.add(message_id)
-
     msg = await update.message.reply_text("🎵 Processing your audio... one moment!")
     tmp_path = None
 
@@ -142,12 +153,10 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             y, sr = librosa.load(tmp_path, sr=22050, mono=True, duration=30)
 
-        if sr > 22050:
-            y = librosa.resample(y, sr, 22050)
-            sr = 22050
         if len(y) > 30*sr:
             y = y[:30*sr]
 
+        # Run CPU-heavy processing in threads
         freq, key_info = await asyncio.to_thread(lambda: (detect_pitch(y,sr), detect_key(y,sr)))
         note_name, cents_off, target_freq = hz_to_note(freq)
         key_name, key_conf = key_info
@@ -168,10 +177,9 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await msg.edit_text(response_msg, parse_mode=constants.ParseMode.MARKDOWN)
 
-        try:
-            await asyncio.to_thread(plot_waveform, y, sr, note_name, key_name, update)
-        except Exception as e:
-            logger.error(f"Waveform error: {e}")
+        # Waveform
+        buf = await asyncio.to_thread(plot_waveform, y, sr, note_name, key_name)
+        await update.message.reply_photo(buf, caption=f"📊 Waveform\nNote: {note_name} | Key: {key_name}")
 
     except Exception as e:
         logger.error(f"Processing error: {e}", exc_info=True)
@@ -182,20 +190,20 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try: os.remove(tmp_path)
             except: pass
 
-def plot_waveform(y, sr, note_name, key_name, update):
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(10,4))
-    duration_to_plot = min(len(y)/sr,5)
-    samples_to_plot = int(duration_to_plot*sr)
-    time_axis = np.linspace(0,duration_to_plot,samples_to_plot)
-    ax.plot(time_axis, y[:samples_to_plot], linewidth=0.5)
-    ax.set_title(f"Waveform – Note: {note_name} | Key: {key_name}", fontsize=14, fontweight='bold')
-    ax.set_xlabel("Time (seconds)")
-    ax.set_ylabel("Amplitude")
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0,duration_to_plot)
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight", dpi=100)
-    plt.close(fig)
-    buf.seek(0)
-    asyncio.run(update.message.reply_photo(buf, caption=f"📊 Waveform\nNote: {note_name} | Key: {key_name}"))
+# --- Run Bot ---
+def main():
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        logger.error("Set TELEGRAM_BOT_TOKEN in environment!")
+        return
+
+    app = ApplicationBuilder().token(token).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_audio))
+
+    logger.info("🤖 Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
