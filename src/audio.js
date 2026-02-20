@@ -61,6 +61,13 @@ function extensionOf(path = "") {
   return path.slice(idx + 1).toLowerCase();
 }
 
+function limitInputForDecode(arrayBuffer, maxBytes = 2 * 1024 * 1024) {
+  if (!(arrayBuffer instanceof ArrayBuffer) || arrayBuffer.byteLength <= maxBytes) {
+    return arrayBuffer;
+  }
+  return arrayBuffer.slice(0, maxBytes);
+}
+
 function mergeChannels(channelData) {
   if (!channelData?.length) {
     return new Float32Array(0);
@@ -127,8 +134,10 @@ function decodeWav(arrayBuffer) {
     throw new Error("WAV data chunk not found");
   }
 
+  const availableDataSize = Math.max(0, Math.min(dataSize, view.byteLength - dataOffset));
+
   const bytesPerSample = bitsPerSample / 8;
-  const totalSamples = Math.floor(dataSize / bytesPerSample / numChannels);
+  const totalSamples = Math.floor(availableDataSize / bytesPerSample / numChannels);
   const channels = Array.from({ length: numChannels }, () => new Float32Array(totalSamples));
 
   for (let i = 0; i < totalSamples; i += 1) {
@@ -191,6 +200,8 @@ function clipDuration(samples, sampleRate, maxSeconds) {
 async function decodeOgg(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   const decodeTimeoutMs = 12000;
+  let opusErrorMessage = "unknown";
+  let vorbisErrorMessage = "unknown";
 
   try {
     const OggOpusDecoder = await getOggOpusDecoderClass();
@@ -204,21 +215,29 @@ async function decodeOgg(arrayBuffer) {
     if (decoded?.channelData?.length) {
       return { samples: mergeChannels(decoded.channelData), sampleRate: decoded.sampleRate };
     }
-  } catch {
+    opusErrorMessage = "decoded_empty";
+  } catch (error) {
+    opusErrorMessage = String(error?.message ?? "opus_decode_failed");
   }
 
-  const OggVorbisDecoder = await getOggVorbisDecoderClass();
-  const decoded = await decodeWithDecoder({
-    DecoderClass: OggVorbisDecoder,
-    bytes,
-    timeoutMs: decodeTimeoutMs,
-    label: "ogg_vorbis_decode",
-  });
-  if (!decoded?.channelData?.length) {
-    throw new Error("Failed to decode OGG");
+  try {
+    const OggVorbisDecoder = await getOggVorbisDecoderClass();
+    const decoded = await decodeWithDecoder({
+      DecoderClass: OggVorbisDecoder,
+      bytes,
+      timeoutMs: decodeTimeoutMs,
+      label: "ogg_vorbis_decode",
+    });
+    if (!decoded?.channelData?.length) {
+      vorbisErrorMessage = "decoded_empty";
+    } else {
+      return { samples: mergeChannels(decoded.channelData), sampleRate: decoded.sampleRate };
+    }
+  } catch (error) {
+    vorbisErrorMessage = String(error?.message ?? "vorbis_decode_failed");
   }
 
-  return { samples: mergeChannels(decoded.channelData), sampleRate: decoded.sampleRate };
+  throw new Error(`Failed to decode OGG (opus=${opusErrorMessage}; vorbis=${vorbisErrorMessage})`);
 }
 
 async function decodeMp3(arrayBuffer) {
@@ -241,25 +260,26 @@ async function decodeMp3(arrayBuffer) {
 export async function decodeAudioFile(arrayBuffer, mimeType = "", filePath = "", maxSeconds = 30) {
   const ext = extensionOf(filePath);
   const mime = mimeType.toLowerCase();
+  const limitedBuffer = limitInputForDecode(arrayBuffer);
 
   let decoded;
 
   if (mime.includes("wav") || ext === "wav") {
-    decoded = decodeWav(arrayBuffer);
+    decoded = decodeWav(limitedBuffer);
   } else if (mime.includes("mpeg") || mime.includes("mp3") || ext === "mp3") {
-    decoded = await decodeMp3(arrayBuffer);
+    decoded = await decodeMp3(limitedBuffer);
   } else if (mime.includes("ogg") || mime.includes("opus") || ext === "ogg" || ext === "opus") {
-    decoded = await decodeOgg(arrayBuffer);
+    decoded = await decodeOgg(limitedBuffer);
   } else if (ext === "wav") {
-    decoded = decodeWav(arrayBuffer);
+    decoded = decodeWav(limitedBuffer);
   } else {
     try {
-      decoded = await decodeOgg(arrayBuffer);
+      decoded = await decodeOgg(limitedBuffer);
     } catch {
       try {
-        decoded = await decodeMp3(arrayBuffer);
+        decoded = await decodeMp3(limitedBuffer);
       } catch {
-        decoded = decodeWav(arrayBuffer);
+        decoded = decodeWav(limitedBuffer);
       }
     }
   }
