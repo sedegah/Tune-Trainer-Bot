@@ -2,6 +2,16 @@ let OggVorbisDecoderClass;
 let OggOpusDecoderClass;
 let MPEGDecoderClass;
 
+function ensureWorkerGlobal() {
+  if (typeof globalThis.Worker !== "undefined") return;
+
+  globalThis.Worker = class WorkerUnavailable {
+    constructor() {
+      throw new Error("Worker threads are unavailable in this runtime");
+    }
+  };
+}
+
 function withPromiseTimeout(promise, timeoutMs, label) {
   let timeoutHandle;
   const timeoutPromise = new Promise((_, reject) => {
@@ -32,6 +42,7 @@ async function decodeWithDecoder({
 }
 
 async function getOggVorbisDecoderClass() {
+  ensureWorkerGlobal();
   if (!OggVorbisDecoderClass) {
     const mod = await import("@wasm-audio-decoders/ogg-vorbis");
     OggVorbisDecoderClass = mod.OggVorbisDecoder;
@@ -40,6 +51,7 @@ async function getOggVorbisDecoderClass() {
 }
 
 async function getOggOpusDecoderClass() {
+  ensureWorkerGlobal();
   if (!OggOpusDecoderClass) {
     const mod = await import("@aldlss/ogg-opus-decoder");
     OggOpusDecoderClass = mod.OggOpusDecoder;
@@ -48,6 +60,7 @@ async function getOggOpusDecoderClass() {
 }
 
 async function getMpegDecoderClass() {
+  ensureWorkerGlobal();
   if (!MPEGDecoderClass) {
     const mod = await import("mpg123-decoder");
     MPEGDecoderClass = mod.MPEGDecoder;
