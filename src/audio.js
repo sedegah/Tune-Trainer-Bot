@@ -77,13 +77,6 @@ function extensionOf(path = "") {
   return path.slice(idx + 1).toLowerCase();
 }
 
-function limitInputForDecode(arrayBuffer, maxBytes = 2 * 1024 * 1024) {
-  if (!(arrayBuffer instanceof ArrayBuffer) || arrayBuffer.byteLength <= maxBytes) {
-    return arrayBuffer;
-  }
-  return arrayBuffer.slice(0, maxBytes);
-}
-
 function mergeChannels(channelData) {
   if (!channelData?.length) {
     return new Float32Array(0);
@@ -213,9 +206,10 @@ function clipDuration(samples, sampleRate, maxSeconds) {
   return samples.subarray(0, maxSamples);
 }
 
-async function decodeOgg(arrayBuffer) {
+async function decodeOgg(arrayBuffer, options = {}) {
   const bytes = new Uint8Array(arrayBuffer);
-  const decodeTimeoutMs = 12000;
+  const decodeTimeoutMs = Math.max(5000, Number(options.timeoutMs ?? 45000));
+  const preferOpusOnly = options.preferOpusOnly === true;
   let opusErrorMessage = "unknown";
   let vorbisErrorMessage = "unknown";
 
@@ -234,6 +228,10 @@ async function decodeOgg(arrayBuffer) {
     opusErrorMessage = "decoded_empty";
   } catch (error) {
     opusErrorMessage = String(error?.message ?? "opus_decode_failed");
+  }
+
+  if (preferOpusOnly) {
+    throw new Error(`Failed to decode OGG Opus (opus=${opusErrorMessage})`);
   }
 
   try {
@@ -261,7 +259,7 @@ async function decodeMp3(arrayBuffer) {
   const decoded = await decodeWithDecoder({
     DecoderClass: MPEGDecoder,
     bytes: new Uint8Array(arrayBuffer),
-    timeoutMs: 12000,
+    timeoutMs: 45000,
     label: "mp3_decode",
     decodeMethod: "decode",
   });
@@ -273,29 +271,30 @@ async function decodeMp3(arrayBuffer) {
   return { samples: mergeChannels(decoded.channelData), sampleRate: decoded.sampleRate };
 }
 
-export async function decodeAudioFile(arrayBuffer, mimeType = "", filePath = "", maxSeconds = 30) {
+export async function decodeAudioFile(arrayBuffer, mimeType = "", filePath = "", maxSeconds = 30, options = {}) {
   const ext = extensionOf(filePath);
   const mime = mimeType.toLowerCase();
-  const limitedBuffer = limitInputForDecode(arrayBuffer);
+  const decoderTimeoutMs = Math.max(5000, Number(options.decoderTimeoutMs ?? 45000));
+  const preferOpusOnly = options.preferOpusOnly === true;
 
   let decoded;
 
   if (mime.includes("wav") || ext === "wav") {
-    decoded = decodeWav(limitedBuffer);
+    decoded = decodeWav(arrayBuffer);
   } else if (mime.includes("mpeg") || mime.includes("mp3") || ext === "mp3") {
-    decoded = await decodeMp3(limitedBuffer);
+    decoded = await decodeMp3(arrayBuffer);
   } else if (mime.includes("ogg") || mime.includes("opus") || ext === "ogg" || ext === "opus") {
-    decoded = await decodeOgg(limitedBuffer);
+    decoded = await decodeOgg(arrayBuffer, { timeoutMs: decoderTimeoutMs, preferOpusOnly });
   } else if (ext === "wav") {
-    decoded = decodeWav(limitedBuffer);
+    decoded = decodeWav(arrayBuffer);
   } else {
     try {
-      decoded = await decodeOgg(limitedBuffer);
+      decoded = await decodeOgg(arrayBuffer, { timeoutMs: decoderTimeoutMs, preferOpusOnly });
     } catch {
       try {
-        decoded = await decodeMp3(limitedBuffer);
+        decoded = await decodeMp3(arrayBuffer);
       } catch {
-        decoded = decodeWav(limitedBuffer);
+        decoded = decodeWav(arrayBuffer);
       }
     }
   }

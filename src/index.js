@@ -429,7 +429,10 @@ async function processAudioUpdate(env, message) {
     let decoded;
     try {
       decoded = await withTimeout(
-        decodeAudioFile(downloaded.bytes, audio.mimeType, downloaded.filePath, maxSeconds),
+        decodeAudioFile(downloaded.bytes, audio.mimeType, downloaded.filePath, maxSeconds, {
+          decoderTimeoutMs: Math.max(5000, decodeTimeoutMs - 2000),
+          preferOpusOnly: audio.source === "voice",
+        }),
         decodeTimeoutMs,
         "decode",
       );
