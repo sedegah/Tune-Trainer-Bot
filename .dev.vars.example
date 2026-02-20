@@ -1,0 +1,4 @@
+BOT_TOKEN=your-telegram-bot-token
+WEBHOOK_SECRET=choose-a-random-secret
+PUBLIC_BASE_URL=https://your-worker.your-subdomain.workers.dev
+CLOUDFLARE_API_TOKEN=your-cloudflare-workers-api-token

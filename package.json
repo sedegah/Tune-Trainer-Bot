@@ -1,0 +1,19 @@
+{
+  "name": "tune-trainer-bot-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "set-webhook": "node scripts/set-webhook.mjs"
+  },
+  "dependencies": {
+    "@aldlss/ogg-opus-decoder": "^1.6.9",
+    "@wasm-audio-decoders/ogg-vorbis": "^0.1.20",
+    "mpg123-decoder": "^1.0.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.22.0"
+  }
+}

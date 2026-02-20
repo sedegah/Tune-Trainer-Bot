@@ -1,76 +1,88 @@
-# TuneTrainerBot
+# TuneTrainerBot (Cloudflare Worker + JavaScript)
 
-TuneTrainerBot is a Telegram bot that analyzes audio files to detect musical notes, assess tuning accuracy, identify the key, and suggest appropriate chords. It utilizes FastAPI for the backend and the python-telegram-bot library for Telegram integration.
+TuneTrainerBot is now rebuilt in JavaScript for Cloudflare Workers.
+
+It receives Telegram webhook updates, downloads incoming audio/voice files, detects pitch and note, estimates key, suggests chords, and sends a waveform visualization as an SVG document.
 
 ## Features
 
-* Detects the musical note from audio input.
-* Measures tuning accuracy in cents (sharp or flat).
-* Identifies the key of the audio.
-* Suggests chords based on the detected key.
-* Provides a waveform visualization of the audio.
-* Supports audio formats: MP3, WAV, OGG.
-* Handles audio files up to 10MB in size.
+- Detects note from audio input
+- Measures tuning offset in cents (sharp/flat)
+- Estimates musical key (major/minor)
+- Suggests diatonic chords from detected key
+- Returns waveform visualization (SVG)
+- Supports Telegram audio (OGG/Vorbis, MP3, WAV)
+- Enforces file size and duration limits
+
+## Project Layout
+
+- `src/index.js` — Cloudflare Worker webhook + Telegram integration
+- `src/audio.js` — audio decoding/resampling pipeline
+- `src/music.js` — pitch, note, key, chords, waveform SVG generation
+- `scripts/set-webhook.mjs` — webhook setup helper
+- `python/` — legacy Python implementation preserved as requested
 
 ## Requirements
 
-* Python 3.8+
-* Libraries:
+- Node.js 20+
+- Cloudflare account + Workers API token
+- Telegram bot token
 
-  * `fastapi`
-  * `python-telegram-bot`
-  * `librosa`
-  * `soundfile`
-  * `matplotlib`
-  * `numpy`
-  * `uvicorn`
-* Telegram Bot Token
-* Webhook URL (optional)
+## Local Setup
 
-## Installation
-
-1. Clone the repository:
+1. Install dependencies:
 
    ```bash
-   git clone https://github.com/sedegah/Tune-Trainer-Bot.git
-   cd Tune-Trainer-Bot
+   npm install
    ```
 
-2. Install dependencies:
+2. Create local env file:
 
    ```bash
-   pip install -r requirements.txt
+   cp .dev.vars.example .dev.vars
    ```
 
-3. Set environment variables:
+3. Fill `.dev.vars` values:
+
+   - `BOT_TOKEN`
+   - `WEBHOOK_SECRET`
+   - `PUBLIC_BASE_URL` (your deployed worker URL, required for `npm run set-webhook`)
+   - `CLOUDFLARE_API_TOKEN`
+   - `DECODE_TIMEOUT_MS` (optional, default `35000`)
+
+4. Run locally:
 
    ```bash
-   export TELEGRAM_BOT_TOKEN="your-telegram-bot-token"
-   export WEBHOOK_URL="your-webhook-url"  # Optional
+   npm run dev
    ```
 
-## Usage
-
-Run the bot with:
+## Deploy to Cloudflare
 
 ```bash
-python bot.py
+npm run deploy
 ```
 
-The bot will start and listen for incoming audio messages. When a user sends an audio file, the bot will process it and respond with:
+After deploy, configure Telegram webhook:
 
-* Detected musical note.
-* Tuning accuracy (in cents).
-* Frequency of the note.
-* Estimated key of the audio.
-* Suggested chords based on the key.
-* A waveform visualization of the audio.
+```bash
+npm run set-webhook
+```
 
-## Contributing
+Or call the Worker endpoint directly:
 
-Feel free to fork the repository, submit issues, and send pull requests. Contributions are welcome!
+```bash
+curl -X POST "https://<your-worker-url>/setup-webhook?secret=<WEBHOOK_SECRET>"
+```
 
-## License
+## Webhook Endpoints
 
-This project is licensed under the MIT License.
+- `GET /` health check
+- `POST /webhook` Telegram webhook receiver (validates `X-Telegram-Bot-Api-Secret-Token`)
+- `POST /setup-webhook?secret=...` helper endpoint to set Telegram webhook (auto-uses request origin)
+
+## Notes
+
+- Keep `.dev.vars` private (already git-ignored)
+- Rotate tokens if shared accidentally
+- The Worker sends waveform as SVG document instead of PNG image
 
