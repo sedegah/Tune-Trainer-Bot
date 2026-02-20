@@ -35,7 +35,10 @@ async function decodeWithDecoder({
     return decoded;
   } finally {
     try {
-      await decoder.free?.();
+      const cleanupResult = decoder.free?.();
+      if (cleanupResult && typeof cleanupResult.then === "function") {
+        cleanupResult.catch(() => null);
+      }
     } catch {
     }
   }
