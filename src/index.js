@@ -439,6 +439,16 @@ async function processAudioUpdate(env, message) {
     } catch (decodeError) {
       const rawReason = String(decodeError?.message ?? "decode_error").replace(/\s+/g, " ").trim();
       const reason = rawReason.slice(0, 140);
+      console.error("Audio decode failed", {
+        reason: rawReason,
+        source: audio.source,
+        mimeType: audio.mimeType ?? "",
+        fileName: audio.fileName ?? "",
+        filePath: downloaded?.filePath ?? "",
+        fileSize: audio.fileSize ?? 0,
+        maxSeconds,
+        decodeTimeoutMs,
+      });
       await telegramJson(env, "editMessageText", {
         chat_id: chatId,
         message_id: processingMessage.message_id,
