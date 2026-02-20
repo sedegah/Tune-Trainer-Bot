@@ -381,7 +381,8 @@ async function processAudioUpdate(env, message) {
 
   const maxBytes = Number(env.MAX_AUDIO_BYTES ?? "10485760");
   const maxSeconds = Number(env.MAX_AUDIO_SECONDS ?? "30");
-  const decodeTimeoutMs = Number(env.DECODE_TIMEOUT_MS ?? "35000");
+  const configuredDecodeTimeout = Number(env.DECODE_TIMEOUT_MS ?? "22000");
+  const decodeTimeoutMs = Math.max(8000, Math.min(configuredDecodeTimeout, 28000));
 
   try {
     const audio = parseAudioMessage(message);

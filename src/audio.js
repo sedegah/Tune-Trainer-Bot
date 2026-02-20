@@ -208,7 +208,7 @@ function clipDuration(samples, sampleRate, maxSeconds) {
 
 async function decodeOgg(arrayBuffer, options = {}) {
   const bytes = new Uint8Array(arrayBuffer);
-  const decodeTimeoutMs = Math.max(5000, Number(options.timeoutMs ?? 45000));
+  const decodeTimeoutMs = Math.max(5000, Number(options.timeoutMs ?? 22000));
   const preferOpusOnly = options.preferOpusOnly === true;
   let opusErrorMessage = "unknown";
   let vorbisErrorMessage = "unknown";
@@ -259,7 +259,7 @@ async function decodeMp3(arrayBuffer) {
   const decoded = await decodeWithDecoder({
     DecoderClass: MPEGDecoder,
     bytes: new Uint8Array(arrayBuffer),
-    timeoutMs: 45000,
+    timeoutMs: 22000,
     label: "mp3_decode",
     decodeMethod: "decode",
   });
@@ -274,7 +274,7 @@ async function decodeMp3(arrayBuffer) {
 export async function decodeAudioFile(arrayBuffer, mimeType = "", filePath = "", maxSeconds = 30, options = {}) {
   const ext = extensionOf(filePath);
   const mime = mimeType.toLowerCase();
-  const decoderTimeoutMs = Math.max(5000, Number(options.decoderTimeoutMs ?? 45000));
+  const decoderTimeoutMs = Math.max(5000, Number(options.decoderTimeoutMs ?? 22000));
   const preferOpusOnly = options.preferOpusOnly === true;
 
   let decoded;
